@@ -100,6 +100,10 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
 	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
 	supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
+	supportsThinkingTokenBudget: Type.Optional(Type.Boolean()),
+	thinkingTokenBudgetField: Type.Optional(
+		Type.Union([Type.Literal("thinking_token_budget"), Type.Literal("thinking_budget_tokens")]),
+	),
 	supportsStrictMode: Type.Optional(Type.Boolean()),
 	sendSessionAffinityHeaders: Type.Optional(Type.Boolean()),
 	deferredToolsMode: Type.Optional(Type.Literal("kimi")),

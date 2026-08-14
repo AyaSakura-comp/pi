@@ -158,11 +158,12 @@ interface OpenAICompatCacheControl {
 
 type ResolvedOpenAICompletionsCompat = Omit<
 	Required<OpenAICompletionsCompat>,
-	"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget"
+	"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 	supportsThinkingTokenBudget?: OpenAICompletionsCompat["supportsThinkingTokenBudget"];
+	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 };
 
 type ResolvedChatTemplateKwargValue = string | number | boolean | null;
@@ -845,11 +846,13 @@ function buildParams(
 		}
 	}
 
-	// vLLM caps reasoning with a top-level thinking_token_budget. Independent of
-	// thinkingFormat: the same server can serve zai, qwen or chat-template models.
-	// Reasoning and the answer share max_tokens here, so an uncapped reasoning
-	// phase can consume the whole response and leave no answer and no tool call.
-	if (compat.supportsThinkingTokenBudget && options?.reasoningEffort && model.reasoning) {
+	// vLLM and llama.cpp use different top-level fields to cap reasoning tokens.
+	// Independent of thinkingFormat: the same server can serve zai, qwen or
+	// chat-template models. Reasoning and the answer share max_tokens here, so
+	// an uncapped reasoning phase can consume the whole response and leave no answer.
+	const thinkingTokenBudgetField =
+		compat.thinkingTokenBudgetField ?? (compat.supportsThinkingTokenBudget ? "thinking_token_budget" : undefined);
+	if (thinkingTokenBudgetField && options?.reasoningEffort && model.reasoning) {
 		const level = clampReasoning(options.reasoningEffort)!;
 		const budgets: ThinkingBudgets = {
 			minimal: 1024,
@@ -862,7 +865,11 @@ function buildParams(
 		// Always leave room for the answer, otherwise the budget recreates the bug it prevents.
 		const budget = Math.min(budgets[level]!, Math.max(0, ceiling - MIN_ANSWER_TOKENS));
 		if (budget > 0) {
-			(params as { thinking_token_budget?: number }).thinking_token_budget = budget;
+			const budgetParams = params as typeof params & {
+				thinking_token_budget?: number;
+				thinking_budget_tokens?: number;
+			};
+			budgetParams[thinkingTokenBudgetField] = budget;
 		}
 	}
 
@@ -1521,6 +1528,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		chatTemplateArgs: {},
 		zaiToolStream: false,
 		supportsThinkingTokenBudget: false,
+		thinkingTokenBudgetField: undefined,
 		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia,
 		supportsOpenAIGrammarTools: false,
 		cacheControlFormat,
@@ -1566,6 +1574,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		chatTemplateArgs: model.compat.chatTemplateArgs ?? detected.chatTemplateArgs,
 		zaiToolStream: model.compat.zaiToolStream ?? detected.zaiToolStream,
 		supportsThinkingTokenBudget: model.compat.supportsThinkingTokenBudget ?? detected.supportsThinkingTokenBudget,
+		thinkingTokenBudgetField: model.compat.thinkingTokenBudgetField ?? detected.thinkingTokenBudgetField,
 		supportsStrictMode: model.compat.supportsStrictMode ?? detected.supportsStrictMode,
 		supportsOpenAIGrammarTools: model.compat.supportsOpenAIGrammarTools ?? detected.supportsOpenAIGrammarTools,
 		cacheControlFormat: model.compat.cacheControlFormat ?? detected.cacheControlFormat,

@@ -588,6 +588,8 @@ export interface OpenAICompletionsCompat {
 	zaiToolStream?: boolean;
 	/** Whether the provider supports top-level `thinking_token_budget` to cap reasoning tokens (vLLM). Reasoning and the answer share `max_tokens` on these endpoints, so without a budget a reasoning-heavy turn can consume the whole response and emit no answer. Default: false. */
 	supportsThinkingTokenBudget?: boolean;
+	/** Top-level request field used by the provider to cap reasoning tokens. Use `thinking_budget_tokens` for llama.cpp. */
+	thinkingTokenBudgetField?: "thinking_token_budget" | "thinking_budget_tokens";
 	/** Whether the provider supports OpenAI custom tools with Lark/regex grammar formats. When false, grammar-constrained tools fall back to normal function tools. Default: false; the generated model catalog enables it for capable models. */
 	supportsOpenAIGrammarTools?: boolean;
 	/** Whether the provider supports the `strict` field in tool definitions. Default: true. */

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added configurable llama.cpp `thinking_budget_tokens` support for OpenAI-compatible reasoning models.
+
 ### Changed
 
 - Changed Kimi Coding requests to use pi's runtime `User-Agent` header.

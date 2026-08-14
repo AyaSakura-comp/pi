@@ -63,7 +63,12 @@ async function capture(
 		thinkingBudgets?: ThinkingBudgets;
 		maxTokens?: number;
 	},
-): Promise<{ thinking_token_budget?: number; thinking?: unknown }> {
+): Promise<{
+	thinking_token_budget?: number;
+	thinking_budget_tokens?: number;
+	thinking?: unknown;
+	chat_template_kwargs?: { enable_thinking?: boolean };
+}> {
 	let payload: unknown;
 
 	await streamSimple(
@@ -80,7 +85,12 @@ async function capture(
 		},
 	).result();
 
-	return (payload ?? mockState.lastParams) as { thinking_token_budget?: number; thinking?: unknown };
+	return (payload ?? mockState.lastParams) as {
+		thinking_token_budget?: number;
+		thinking_budget_tokens?: number;
+		thinking?: unknown;
+		chat_template_kwargs?: { enable_thinking?: boolean };
+	};
 }
 
 describe("openai-completions thinking_token_budget", () => {
@@ -120,5 +130,57 @@ describe("openai-completions thinking_token_budget", () => {
 	it("uses the caller max_tokens as the ceiling when it is lower than the model cap", async () => {
 		const params = await capture(vllmModel, { reasoning: "high", thinkingBudgets: { high: 8192 }, maxTokens: 4096 });
 		expect(params.thinking_token_budget).toBe(4096 - 1024);
+	});
+
+	it.each([
+		["minimal", 128],
+		["low", 512],
+		["medium", 1024],
+		["high", 2048],
+	] as const)("sends llama.cpp %s as thinking_budget_tokens", async (reasoning, budget) => {
+		const model: Model<"openai-completions"> = {
+			...vllmModel,
+			provider: "local-llama",
+			compat: {
+				thinkingFormat: "qwen-chat-template",
+				thinkingTokenBudgetField: "thinking_budget_tokens",
+			},
+		};
+		const params = await capture(model, {
+			reasoning,
+			thinkingBudgets: { minimal: 128, low: 512, medium: 1024, high: 2048 },
+		});
+
+		expect(params.chat_template_kwargs?.enable_thinking).toBe(true);
+		expect(params.thinking_budget_tokens).toBe(budget);
+		expect(params.thinking_token_budget).toBeUndefined();
+	});
+
+	it("disables llama.cpp thinking without sending a token budget", async () => {
+		const model: Model<"openai-completions"> = {
+			...vllmModel,
+			provider: "local-llama",
+			compat: {
+				thinkingFormat: "qwen-chat-template",
+				thinkingTokenBudgetField: "thinking_budget_tokens",
+			},
+		};
+		const params = await capture(model);
+
+		expect(params.chat_template_kwargs?.enable_thinking).toBe(false);
+		expect(params.thinking_budget_tokens).toBeUndefined();
+	});
+
+	it("does not add a llama.cpp budget to OpenAI reasoning requests", async () => {
+		const model: Model<"openai-completions"> = {
+			...vllmModel,
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			compat: { thinkingFormat: "openai", supportsReasoningEffort: true },
+		};
+		const params = await capture(model, { reasoning: "high", thinkingBudgets: { high: 2048 } });
+
+		expect(params.thinking_budget_tokens).toBeUndefined();
+		expect(params.thinking_token_budget).toBeUndefined();
 	});
 });
