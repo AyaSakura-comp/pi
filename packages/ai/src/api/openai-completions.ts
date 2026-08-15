@@ -861,9 +861,10 @@ function buildParams(
 			high: 16384,
 			...options.thinkingBudgets,
 		};
+		const requestedBudget = options.reasoningEffort === "xhigh" ? budgets.xhigh : undefined;
 		const ceiling = (params as { max_tokens?: number }).max_tokens ?? params.max_completion_tokens ?? model.maxTokens;
 		// Always leave room for the answer, otherwise the budget recreates the bug it prevents.
-		const budget = Math.min(budgets[level]!, Math.max(0, ceiling - MIN_ANSWER_TOKENS));
+		const budget = Math.min(requestedBudget ?? budgets[level]!, Math.max(0, ceiling - MIN_ANSWER_TOKENS));
 		if (budget > 0) {
 			const budgetParams = params as typeof params & {
 				thinking_token_budget?: number;

@@ -10,6 +10,7 @@
 - Added the `defaultTools` setting for configuring the initial built-in tool selection globally or per project.
 - Added `--use-theme <name[/name]>` to choose an initial per-run interactive theme without changing saved settings ([#7722](https://github.com/earendil-works/pi/pull/7722) by [@rwachtler](https://github.com/rwachtler)).
 - Added custom-model configuration for llama.cpp per-request thinking token budgets.
+- Added `thinkingBudgets.xhigh` for a distinct maximum token budget on compatible reasoning models.
 
 ### Changed
 

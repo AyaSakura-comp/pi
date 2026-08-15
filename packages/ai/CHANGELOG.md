@@ -5,6 +5,7 @@
 ### Added
 
 - Added configurable llama.cpp `thinking_budget_tokens` support for OpenAI-compatible reasoning models.
+- Added a distinct configurable `xhigh` token budget for token-budget-compatible providers.
 
 ### Changed
 

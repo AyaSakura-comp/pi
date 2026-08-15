@@ -42,7 +42,8 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
     "minimal": 1024,
     "low": 4096,
     "medium": 10240,
-    "high": 32768
+    "high": 32768,
+    "xhigh": 49152
   }
 }
 ```

@@ -74,7 +74,7 @@ export function adjustMaxTokensForThinking(
 	const budgets = { ...defaultBudgets, ...customBudgets };
 
 	const level = clampReasoning(reasoningLevel)!;
-	let thinkingBudget = budgets[level]!;
+	let thinkingBudget = reasoningLevel === "xhigh" ? (budgets.xhigh ?? budgets[level]!) : budgets[level]!;
 	const maxTokens =
 		baseMaxTokens === undefined ? modelMaxTokens : Math.min(baseMaxTokens + thinkingBudget, modelMaxTokens);
 

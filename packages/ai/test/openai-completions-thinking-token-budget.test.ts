@@ -121,6 +121,18 @@ describe("openai-completions thinking_token_budget", () => {
 		expect(max.thinking_token_budget).toBe(8192);
 	});
 
+	it("uses a distinct xhigh budget when configured", async () => {
+		const model = {
+			...vllmModel,
+			thinkingLevelMap: { xhigh: "xhigh" },
+		} as Model<"openai-completions">;
+		const params = await capture(model, {
+			reasoning: "xhigh",
+			thinkingBudgets: { high: 4096, xhigh: 12000 },
+		});
+		expect(params.thinking_token_budget).toBe(12000);
+	});
+
 	it("leaves room for the answer when the budget meets the response ceiling", async () => {
 		// Default high budget (16384) equals the model ceiling, which would leave no answer.
 		const params = await capture(vllmModel, { reasoning: "high" });
