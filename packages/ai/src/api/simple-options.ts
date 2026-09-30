@@ -68,7 +68,7 @@ export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<Think
 export function thinkingBudgetForLevel(reasoningLevel: ThinkingLevel, customBudgets?: ThinkingBudgets): number {
 	const budgets = { ...DEFAULT_THINKING_BUDGETS, ...customBudgets };
 	const level = clampReasoning(reasoningLevel)!;
-	return budgets[level]!;
+	return reasoningLevel === "xhigh" ? (budgets.xhigh ?? budgets[level]!) : budgets[level]!;
 }
 
 /** Cap a thinking budget so at least MIN_ANSWER_TOKENS remain under a shared response ceiling. */

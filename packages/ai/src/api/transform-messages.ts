@@ -158,6 +158,7 @@ export function transformMessages<TApi extends Api>(
 	// Second pass: insert synthetic empty tool results for orphaned tool calls
 	// This preserves thinking signatures and satisfies API requirements
 	const result: Message[] = [];
+	const skippedToolCallIds = new Set<string>();
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
 	const insertSyntheticToolResults = () => {
@@ -193,18 +194,25 @@ export function transformMessages<TApi extends Api>(
 			// - The model should retry from the last valid state
 			const assistantMsg = msg as AssistantMessage;
 			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+				for (const block of assistantMsg.content) {
+					if (block.type === "toolCall") skippedToolCallIds.add(block.id);
+				}
 				continue;
 			}
 
 			// Track tool calls from this assistant message
 			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
 			if (toolCalls.length > 0) {
+				for (const call of toolCalls) skippedToolCallIds.delete(call.id);
 				pendingToolCalls = toolCalls;
 				existingToolResultIds = new Set();
 			}
 
 			result.push(msg);
 		} else if (msg.role === "toolResult") {
+			// A skipped incomplete call cannot own an output in the replay payload.
+			// Use the normalized IDs from the first pass, including after model switches.
+			if (skippedToolCallIds.has(msg.toolCallId)) continue;
 			existingToolResultIds.add(msg.toolCallId);
 			result.push(msg);
 		} else if (msg.role === "user") {

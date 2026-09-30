@@ -129,6 +129,44 @@ describe("openai-completions thinking token budget", () => {
 		expect(max.thinking_token_budget).toBe(8192);
 	});
 
+	it("uses a distinct configured xhigh budget for llama.cpp", async () => {
+		const model: Model<"openai-completions"> = {
+			...vllmModel({ thinkingFormat: "qwen-chat-template", thinkingTokenBudgetField: "thinking_budget_tokens" }),
+			provider: "local-llama",
+			thinkingLevelMap: { xhigh: "xhigh" },
+		};
+		const params = await capture(model, {
+			reasoning: "xhigh",
+			thinkingBudgets: { high: 4096, xhigh: 12000 },
+		});
+		expect(params.chat_template_kwargs?.enable_thinking).toBe(true);
+		expect(params.thinking_budget_tokens).toBe(12000);
+		expect(params.thinking_token_budget).toBeUndefined();
+	});
+
+	it.each([
+		["minimal", 128],
+		["low", 512],
+		["medium", 1024],
+		["high", 2048],
+	] as const)("preserves llama.cpp %s budget", async (reasoning, budget) => {
+		const params = await capture(
+			vllmModel({ thinkingFormat: "qwen-chat-template", thinkingTokenBudgetField: "thinking_budget_tokens" }),
+			{ reasoning, thinkingBudgets: { minimal: 128, low: 512, medium: 1024, high: 2048 } },
+		);
+		expect(params.chat_template_kwargs?.enable_thinking).toBe(true);
+		expect(params.thinking_budget_tokens).toBe(budget);
+		expect(params.thinking_token_budget).toBeUndefined();
+	});
+
+	it("disables llama.cpp thinking without a token budget", async () => {
+		const params = await capture(
+			vllmModel({ thinkingFormat: "qwen-chat-template", thinkingTokenBudgetField: "thinking_budget_tokens" }),
+		);
+		expect(params.chat_template_kwargs?.enable_thinking).toBe(false);
+		expect(params.thinking_budget_tokens).toBeUndefined();
+	});
+
 	it("leaves room for the answer when the budget meets the response ceiling", async () => {
 		const params = await capture(vllmModel(), { reasoning: "high" });
 		expect(params.thinking_token_budget).toBe(16384 - 1024);
