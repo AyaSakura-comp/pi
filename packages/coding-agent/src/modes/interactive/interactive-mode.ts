@@ -2053,6 +2053,8 @@ export class InteractiveMode {
 			shutdown: () => {
 				this.shutdownRequested = true;
 			},
+			// Shortcuts never run inside a tool call, so there is nothing to prefill.
+			prefill: { begin: () => undefined },
 			getContextUsage: () => this.session.getContextUsage(),
 			compact: (options) => {
 				void (async () => {

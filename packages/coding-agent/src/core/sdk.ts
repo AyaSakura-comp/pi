@@ -10,6 +10,7 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import { PrefillController } from "./prefill.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -302,6 +303,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const applyPayloadHooks = async (payload: unknown): Promise<unknown> => {
+		const runner = extensionRunnerRef.current;
+		if (!runner?.hasHandlers("before_provider_request")) {
+			return payload;
+		}
+		return runner.emitBeforeProviderRequest(payload);
+	};
+	const prefill = new PrefillController({
+		getSettings: () => settingsManager.getPrefillSettings(),
+		getSessionId: () => sessionManager.getSessionId(),
+		getMessages: () => agent.state.messages,
+		getModel: () => agent.state.model,
+		preview: (extraMessages, signal) =>
+			agent.previewProviderPayload(extraMessages, { signal, onPayload: applyPayloadHooks }),
+		leaseDir: join(agentDir, "prefill-leases"),
+	});
 
 	agent = new Agent({
 		initialState: {
@@ -340,13 +357,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				},
 			});
 		},
-		onPayload: async (payload, _model) => {
-			const runner = extensionRunnerRef.current;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				return payload;
-			}
-			return runner.emitBeforeProviderRequest(payload);
-		},
+		// Pin after extension hooks so their id_slot choice cannot undo a warmed slot.
+		onPayload: async (payload, model) => prefill.pin(await applyPayloadHooks(payload), model),
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("after_provider_response")) {
@@ -399,6 +411,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		prefill,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

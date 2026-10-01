@@ -55,6 +55,7 @@ import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
+import type { PrefillApi, PrefillHandle } from "../prefill.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -346,6 +347,11 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Speculative prefill for a running tool call (llama.cpp only, opt-in via
+	 * the `prefill` setting). See `PrefillApi` for the contract.
+	 */
+	prefill: PrefillApi;
 }
 
 /**
@@ -1727,6 +1733,7 @@ export interface ExtensionContextActions {
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	beginPrefill?: (toolCallId: string) => PrefillHandle | undefined;
 }
 
 /**

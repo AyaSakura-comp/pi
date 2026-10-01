@@ -387,6 +387,55 @@ export class Agent {
 		await this.runContinuation();
 	}
 
+	/**
+	 * Build the provider payload the next request would send if `extraMessages`
+	 * were appended to the transcript, without sending it.
+	 *
+	 * Runs the same context transform, LLM conversion, and stream function as a
+	 * real turn, but replaces `onPayload` with a capture that aborts before any
+	 * network request. `options.onPayload` (default: none) transforms the
+	 * payload before it is captured, e.g. to apply extension payload hooks.
+	 * Throws if the stream function never produced a payload.
+	 */
+	async previewProviderPayload(
+		extraMessages: AgentMessage[],
+		options: { signal?: AbortSignal; onPayload?: (payload: unknown) => unknown | Promise<unknown> } = {},
+	): Promise<{ model: Model<any>; payload: unknown }> {
+		const signal = options.signal;
+		const config = this.createLoopConfig();
+		let messages = [...this._state.messages, ...extraMessages];
+		if (config.transformContext) {
+			messages = await config.transformContext(messages, signal);
+		}
+		const llmMessages = await config.convertToLlm(messages);
+		const apiKey = (config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+		const captured: { payload?: unknown } = {};
+		const stop = new Error("payload_preview_captured");
+		const response = await this.streamFunction(
+			config.model,
+			{ systemPrompt: this._state.systemPrompt, messages: llmMessages, tools: this._state.tools.slice() },
+			{
+				...config,
+				apiKey,
+				signal,
+				maxRetries: 0,
+				onPayload: async (payload) => {
+					const transformed = options.onPayload ? await options.onPayload(payload) : payload;
+					captured.payload = structuredClone(transformed ?? payload);
+					throw stop;
+				},
+				onResponse: undefined,
+			},
+		);
+		for await (const _event of response) {
+			// Drain: the capture aborts the stream before the provider request.
+		}
+		if (captured.payload === undefined) {
+			throw new Error("payload_preview_unavailable");
+		}
+		return { model: config.model, payload: captured.payload };
+	}
+
 	private normalizePromptInput(
 		input: string | AgentMessage | AgentMessage[],
 		images?: ImageContent[],

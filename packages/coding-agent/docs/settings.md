@@ -97,6 +97,23 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 }
 ```
 
+### Prefill
+
+Speculative llama.cpp prefill while a tool runs, used by extensions through [`ctx.prefill`](extensions.md#ctxprefill).
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `prefill.enabled` | boolean | `false` | Allow extensions to prefill the next request |
+| `prefill.providers` | string[] | all | Providers allowed to prefill (must use the `openai-completions` API against llama.cpp) |
+| `prefill.slots` | number[] | `[]` | llama.cpp slots that may be leased when the request does not already set `id_slot` |
+| `prefill.ttlMs` | number | `900000` | Maximum lifetime of one prefill and its slot lease |
+
+```json
+{
+  "prefill": { "enabled": true, "providers": ["local-llama"], "slots": [0] }
+}
+```
+
 ### Warnings
 
 | Setting | Type | Default | Description |

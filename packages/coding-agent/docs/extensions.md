@@ -1106,6 +1106,33 @@ pi.on("before_agent_start", (event, ctx) => {
 });
 ```
 
+### ctx.prefill
+
+Speculative prompt prefill for a slow tool whose result is produced piece by piece. Only for `openai-completions` models served by llama.cpp, and only when the `prefill` setting is enabled (see [settings.md](settings.md)); otherwise `begin` returns `undefined`.
+
+While the tool runs, Pi renders the exact prompt of the next request up to the tool result, and sends that prompt plus the text appended so far to llama.cpp with `n_predict: 0`. The next request is pinned to the same slot, so only the part of the result that was not yet appended is prefilled after the tool returns.
+
+```typescript
+async execute(toolCallId, params, signal, onUpdate, ctx) {
+  const prefill = ctx.prefill.begin(toolCallId);
+  let text = "";
+  for await (const piece of produce(params, signal)) {
+    text += piece;
+    prefill?.append(piece);  // stable text only: it must never change later
+  }
+  prefill?.end();
+  return { content: [{ type: "text", text: text + footer }], details: { prefill: prefill?.stats() } };
+}
+```
+
+Contract and safety:
+
+- `begin(toolCallId)` works only for the single tool call of the latest assistant message. A second `begin` in the same session cancels the first.
+- The final text result must start with everything passed to `append`, in order. If it does not, or anything else in the next request differs from the preview (history, tools, template options, model, session), the request is sent unchanged.
+- Slots are leased exclusively across sessions and processes (`<agentDir>/prefill-leases`). If the request payload already names a slot via `id_slot` (for example set by a KV cache extension), that slot is used; otherwise one of `prefill.slots` is leased.
+- Abort, agent end, timeout, and session disposal cancel the prefill and release the slot. `cancel(reason)` does so explicitly.
+- Correctness never depends on the warm: llama.cpp reuses cached tokens only when they match the final prompt exactly.
+
 ## ExtensionCommandContext
 
 Command handlers receive `ExtensionCommandContext`, which extends `ExtensionContext` with session control methods. These are only available in commands because they can deadlock if called from event handlers.

@@ -9,6 +9,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import type { PrefillSettings } from "./prefill.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -139,6 +140,7 @@ export interface Settings {
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
+	prefill?: PrefillSettings; // Speculative llama.cpp prefill while tools run (default: disabled)
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
@@ -1124,6 +1126,10 @@ export class SettingsManager {
 		this.globalSettings.enableSkillCommands = enabled;
 		this.markModified("enableSkillCommands");
 		this.save();
+	}
+
+	getPrefillSettings(): PrefillSettings {
+		return this.settings.prefill ?? {};
 	}
 
 	getThinkingBudgets(): ThinkingBudgetsSettings | undefined {
