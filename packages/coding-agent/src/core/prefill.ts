@@ -18,16 +18,20 @@
  * not be reused.
  *
  * Isolation and race rules:
- * - One controller per session. A handle is bound to the session id and to the
- *   tool call id of the current assistant message, which must contain exactly
- *   one tool call. A second `begin` in the same session cancels the first.
+ * - One controller per session. A handle is bound to the session id and to a
+ *   tool call id of the current assistant message. Sibling tool calls are fine:
+ *   results are appended in call order, so the prompt up to this tool's result
+ *   only depends on the siblings called before it. The preview waits for their
+ *   real results (from `tool_execution_end`); siblings called after it render
+ *   after the warmed prefix and do not matter. A second `begin` cancels the first.
  * - A slot is only warmed while this handle holds a lease file for it. Leases
  *   are exclusive across sessions and processes, carry pid and expiry, and are
  *   re-checked before every warm. Stale leases (dead pid or expired) are broken.
  * - At most one warm request per handle is in flight; newer appends coalesce.
  * - The final payload is pinned only if it matches the preview exactly (all
- *   earlier messages, template options, model) and its tool result starts with
- *   the warmed text. Otherwise it is sent unchanged. A handle pins at most once.
+ *   messages before this tool result, template options, model) and its tool
+ *   result starts with the warmed text. Otherwise it is sent unchanged. A handle
+ *   pins at most once.
  * - Abort, agent end, timeout, model change and dispose cancel the handle,
  *   abort its in-flight request and release the lease.
  *
@@ -290,6 +294,8 @@ class Handle implements PrefillHandle {
 	warmPromptTokens = 0;
 	warmPromptMs = 0;
 	timer?: ReturnType<typeof setTimeout>;
+	/** Tool call ids called before this one in the same assistant message. */
+	siblingsBefore: string[] = [];
 
 	constructor(controller: PrefillController, toolCallId: string, sessionId: string, model: Model<any>) {
 		this.controller = controller;
@@ -348,6 +354,9 @@ export class PrefillController implements PrefillApi {
 	/** Release of this session's previous lease; a new handle waits for it so it can reuse the slot. */
 	private releasing: Promise<void> = Promise.resolve();
 	private disposed = false;
+	/** Finished tool results of the current run, by tool call id, as they will enter the context. */
+	private readonly results = new Map<string, AgentMessage>();
+	private readonly resultWaiters = new Set<() => void>();
 
 	constructor(options: PrefillControllerOptions) {
 		this.options = options;
@@ -365,10 +374,12 @@ export class PrefillController implements PrefillApi {
 		const last = this.options.getMessages().at(-1);
 		if (last?.role !== "assistant" || last.stopReason !== "toolUse") return undefined;
 		const calls = last.content.filter((part) => part.type === "toolCall");
-		if (calls.length !== 1 || calls[0].id !== toolCallId) return undefined;
+		const index = calls.findIndex((part) => part.id === toolCallId);
+		if (index < 0) return undefined;
 		if (this.active?.toolCallId === toolCallId && this.active.accepting) return undefined;
 		if (this.active) this.finish(this.active, "cancelled", "superseded");
 		const handle = new Handle(this, toolCallId, this.options.getSessionId(), model);
+		handle.siblingsBefore = calls.slice(0, index).map((part) => part.id);
 		this.active = handle;
 		handle.timer = setTimeout(() => this.finish(handle, "cancelled", "ttl"), settings.ttlMs ?? DEFAULT_TTL_MS);
 		handle.timer.unref?.();
@@ -393,7 +404,9 @@ export class PrefillController implements PrefillApi {
 				isError: false,
 				timestamp: this.now(),
 			};
-			const { model, payload } = await this.options.preview([marker], handle.abort.signal);
+			const before = await this.siblingResults(handle);
+			if (!handle.accepting && handle.state !== "ended") return;
+			const { model, payload } = await this.options.preview([...before, marker], handle.abort.signal);
 			if (!handle.accepting) return;
 			if (model.provider !== handle.model.provider || model.id !== handle.model.id) throw new Error("model_changed");
 			if (!isObject(payload) || !Array.isArray(payload.messages)) throw new Error("payload_not_chat");
@@ -440,6 +453,24 @@ export class PrefillController implements PrefillApi {
 			if (handle.state === "starting") handle.state = "ready";
 		} catch (error) {
 			this.finish(handle, "failed", error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/** Results of the tool calls placed before this one in the same assistant message, once all have finished. */
+	private async siblingResults(handle: Handle): Promise<AgentMessage[]> {
+		for (;;) {
+			const found = handle.siblingsBefore.map((id) => this.results.get(id));
+			if (found.every((message) => message !== undefined)) return found as AgentMessage[];
+			if (handle.abort.signal.aborted) throw new Error("aborted");
+			await new Promise<void>((resolve) => {
+				const wake = () => {
+					this.resultWaiters.delete(wake);
+					handle.abort.signal.removeEventListener("abort", wake);
+					resolve();
+				};
+				this.resultWaiters.add(wake);
+				handle.abort.signal.addEventListener("abort", wake, { once: true });
+			});
 		}
 	}
 
@@ -540,11 +571,17 @@ export class PrefillController implements PrefillApi {
 		if (model.provider !== handle.model.provider || model.id !== handle.model.id) return "model_changed";
 		const messages = payload.messages as unknown[];
 		const expected = preview.messages as unknown[];
-		if (messages.length !== expected.length) return "message_count";
-		if (!sameJson(messages.slice(0, -1), expected.slice(0, -1))) return "history_changed";
-		const last = messages.at(-1);
-		if (!isObject(last) || last.role !== "tool" || last.tool_call_id !== handle.toolCallId) return "tool_not_last";
-		if (!sameJson({ ...last, content: MARK }, expected.at(-1))) return "tool_message_shape";
+		// The preview ends at this tool's result; results of sibling calls made
+		// after it may follow in the final payload (they render after the warm).
+		const at = expected.length - 1;
+		if (messages.length < expected.length) return "message_count";
+		if (!sameJson(messages.slice(0, at), expected.slice(0, at))) return "history_changed";
+		const last = messages[at];
+		if (!isObject(last) || last.role !== "tool" || last.tool_call_id !== handle.toolCallId) return "tool_moved";
+		if (messages.slice(at + 1).some((message) => !isObject(message) || message.role !== "tool")) {
+			return "message_after_tool";
+		}
+		if (!sameJson({ ...last, content: MARK }, expected[at])) return "tool_message_shape";
 		if (typeof last.content !== "string" || !last.content.startsWith(handle.warmed)) return "result_not_prefix";
 		if (payload.model !== preview.model) return "payload_model";
 		for (const key of TEMPLATE_KEYS) if (!sameJson(payload[key], preview[key])) return `option_${key}`;
@@ -554,12 +591,30 @@ export class PrefillController implements PrefillApi {
 
 	/** Agent lifecycle: release the pinned lease after its response, drop everything at run end. */
 	onAgentEvent(event: AgentEvent): void {
+		if (event.type === "tool_execution_end") {
+			// Same shape as the agent loop's tool result message (agent-loop createToolResultMessage).
+			const result = event.result ?? {};
+			this.results.set(event.toolCallId, {
+				role: "toolResult",
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				content: result.content ?? [],
+				details: result.details,
+				usage: result.usage,
+				...(result.addedToolNames?.length ? { addedToolNames: result.addedToolNames } : {}),
+				isError: event.isError,
+				timestamp: this.now(),
+			} as AgentMessage);
+			for (const wake of [...this.resultWaiters]) wake();
+			return;
+		}
 		if (event.type === "message_end" && event.message.role === "assistant" && this.pinned) {
 			const handle = this.pinned;
 			this.pinned = undefined;
 			this.releasing = this.release(handle);
 		} else if (event.type === "agent_end") {
 			this.cancelAll("agent_end");
+			this.results.clear();
 		}
 	}
 

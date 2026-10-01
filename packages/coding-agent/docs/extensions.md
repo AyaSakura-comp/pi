@@ -1127,7 +1127,7 @@ async execute(toolCallId, params, signal, onUpdate, ctx) {
 
 Contract and safety:
 
-- `begin(toolCallId)` works only for the single tool call of the latest assistant message. A second `begin` in the same session cancels the first.
+- `begin(toolCallId)` works for any tool call of the latest assistant message. Results enter the context in call order, so the warm waits for the real results of tool calls placed before this one (from `tool_execution_end`); calls placed after it render after the warmed text and do not matter. A second `begin` in the same session cancels the first.
 - The final text result must start with everything passed to `append`, in order. If it does not, or anything else in the next request differs from the preview (history, tools, template options, model, session), the request is sent unchanged.
 - Slots are leased exclusively across sessions and processes (`<agentDir>/prefill-leases`). If the request payload already names a slot via `id_slot` (for example set by a KV cache extension), that slot is used; otherwise one of `prefill.slots` is leased.
 - Abort, agent end, timeout, and session disposal cancel the prefill and release the slot. `cancel(reason)` does so explicitly.

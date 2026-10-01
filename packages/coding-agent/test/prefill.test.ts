@@ -144,11 +144,11 @@ function finalPayload(content: string, extra: Record<string, unknown> = {}) {
 const assistantEnd = { type: "message_end", message: assistant([]) } as AgentEvent;
 
 describe("PrefillController", () => {
-	test("rejects begin unless enabled and bound to the only tool call of the last assistant message", () => {
+	test("rejects begin unless enabled and bound to a tool call of the last assistant message", () => {
 		expect(harness({ settings: { enabled: false, slots: [1] } }).controller.begin("call-1")).toBeUndefined();
 		expect(harness().controller.begin("other")).toBeUndefined();
 		const two = harness({ messages: [assistant(["call-1", "call-2"])] });
-		expect(two.controller.begin("call-1")).toBeUndefined();
+		expect(two.controller.begin("call-1")).toBeDefined();
 		const provider = harness({ settings: { enabled: true, slots: [1], providers: ["other"] } });
 		expect(provider.controller.begin("call-1")).toBeUndefined();
 	});
@@ -182,6 +182,114 @@ describe("PrefillController", () => {
 		h.controller.onAgentEvent(assistantEnd);
 		await flush();
 		expect(readdirSync(leaseDir)).toHaveLength(0);
+	});
+
+	// Payload rendered from the preview's extra messages, like the agent's real pipeline.
+	function siblingPreview(calls: string[], seen: AgentMessage[][]): PrefillControllerOptions["preview"] {
+		return async (extra) => {
+			seen.push(extra);
+			return {
+				model,
+				payload: {
+					model: "qwen",
+					messages: [
+						{ role: "user", content: "question" },
+						{ role: "assistant", content: null, tool_calls: calls.map((id) => ({ id })) },
+						...extra.map((m) => ({
+							role: "tool",
+							tool_call_id: m.role === "toolResult" ? m.toolCallId : "",
+							content: m.role === "toolResult" && m.content[0]?.type === "text" ? m.content[0].text : "",
+						})),
+					],
+					tools: [{ name: "research" }],
+				},
+			};
+		};
+	}
+	const siblingFinal = (calls: string[], tools: Array<[string, string]>, after: unknown[] = []) => ({
+		model: "qwen",
+		messages: [
+			{ role: "user", content: "question" },
+			{ role: "assistant", content: null, tool_calls: calls.map((id) => ({ id })) },
+			...tools.map(([id, content]) => ({ role: "tool", tool_call_id: id, content })),
+			...after,
+		],
+		tools: [{ name: "research" }],
+		stream: true,
+	});
+	const finished = (toolCallId: string, text: string) =>
+		({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "gettime",
+			result: { content: [{ type: "text", text }], details: {} },
+			isError: false,
+		}) as AgentEvent;
+
+	test("a tool called after a sibling waits for the sibling's real result, previews it and pins", async () => {
+		const calls = ["time-1", "call-1"];
+		const seen: AgentMessage[][] = [];
+		const h = harness(
+			{ messages: [{ role: "user", content: "question", timestamp: 0 }, assistant(calls)] },
+			{ preview: siblingPreview(calls, seen) },
+		);
+		const handle = h.controller.begin("call-1")!;
+		expect(handle).toBeDefined();
+		handle.append("A");
+		await flush();
+		expect(h.completions).toHaveLength(0); // gettime has not finished: nothing to preview yet
+		h.controller.onAgentEvent(finished("time-1", "2026-10-02 02:19:36"));
+		await flush();
+		expect(seen.at(-1)!.map((m) => (m.role === "toolResult" ? m.toolCallId : ""))).toEqual(["time-1", "call-1"]);
+		expect(h.completions.map((c) => c.prompt)).toEqual(["<head>A"]);
+		h.gates[0].resolve();
+		await flush();
+		handle.end();
+		const changed = await h.controller.pin(
+			siblingFinal(calls, [
+				["time-1", "2026-10-02 02:19:37"],
+				["call-1", "A rest"],
+			]),
+			model,
+		);
+		expect(changed).not.toHaveProperty("id_slot"); // a different sibling result is never pinned
+		expect(handle.stats()).toMatchObject({ state: "cancelled", reason: "history_changed" });
+	});
+
+	test("a sibling result matching the preview pins; siblings called after the tool may follow it", async () => {
+		const calls = ["time-1", "call-1", "later"];
+		const h = harness(
+			{ messages: [{ role: "user", content: "question", timestamp: 0 }, assistant(calls)] },
+			{ preview: siblingPreview(calls, []) },
+		);
+		h.controller.onAgentEvent(finished("time-1", "now")); // finished before begin
+		const handle = h.controller.begin("call-1")!;
+		handle.append("A");
+		await flush();
+		h.gates[0].resolve();
+		await flush();
+		handle.end();
+		const final = siblingFinal(calls, [
+			["time-1", "now"],
+			["call-1", "A rest"],
+			["later", "other result"],
+		]);
+		const pinned = (await h.controller.pin(final, model)) as Record<string, unknown>;
+		expect(pinned.id_slot).toBe(1);
+	});
+
+	test("a non-tool message after the tool result is never pinned", async () => {
+		const h = harness();
+		const handle = h.controller.begin("call-1")!;
+		handle.append("A");
+		await flush();
+		h.gates[0].resolve();
+		await flush();
+		handle.end();
+		const final = finalPayload("A rest");
+		final.messages.push({ role: "user", content: "steer" } as never);
+		expect(await h.controller.pin(final, model)).not.toHaveProperty("id_slot");
+		expect(handle.stats()).toMatchObject({ reason: "message_after_tool" });
 	});
 
 	test("text committed before end() is still warmed after end(), while Pi handles the tool result", async () => {
