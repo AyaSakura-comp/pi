@@ -55,6 +55,14 @@ export interface PrefillSettings {
 	slots?: number[];
 	/** Handle lifetime in milliseconds. Default: 15 minutes. */
 	ttlMs?: number;
+	/**
+	 * Passive prefill: warm from a tool's own progress updates (`onUpdate`), no
+	 * extension call needed. Applies while each update extends the previous one
+	 * (cumulative, append-only text). Default: true when `enabled`.
+	 */
+	passive?: boolean;
+	/** Passive prefill warms once this many new characters have accumulated. Default: 1024. */
+	passiveThresholdChars?: number;
 }
 
 export type PrefillState = "starting" | "ready" | "ended" | "pinned" | "cancelled" | "failed";
@@ -343,6 +351,25 @@ class Handle implements PrefillHandle {
 	}
 }
 
+/** Concatenated text of a tool result, or undefined when it carries non-text parts. */
+function plainText(result: unknown): string | undefined {
+	const content = isObject(result) ? result.content : undefined;
+	if (content === undefined) return "";
+	if (!Array.isArray(content)) return undefined;
+	const texts: string[] = [];
+	for (const part of content) {
+		if (!isObject(part) || part.type !== "text" || typeof part.text !== "string") return undefined;
+		texts.push(part.text);
+	}
+	// Same join as the openai-completions tool message (packages/ai convertMessages).
+	return texts.join("\n");
+}
+
+function hasNonTextContent(message: unknown): boolean {
+	if (!isObject(message) || !Array.isArray(message.content)) return false;
+	return message.content.some((part: unknown) => !isObject(part) || part.type !== "text");
+}
+
 export class PrefillController implements PrefillApi {
 	private readonly options: PrefillControllerOptions;
 	private readonly leases: SlotLeases;
@@ -356,6 +383,11 @@ export class PrefillController implements PrefillApi {
 	private disposed = false;
 	/** Finished tool results of the current run, by tool call id, as they will enter the context. */
 	private readonly results = new Map<string, AgentMessage>();
+	/** Passive prefill per tool call: text seen so far and how much of it was handed to the warm. */
+	private readonly passive = new Map<
+		string,
+		{ seen: string; committed: number; handle?: PrefillHandle; off?: boolean }
+	>();
 	private readonly resultWaiters = new Set<() => void>();
 
 	constructor(options: PrefillControllerOptions) {
@@ -410,6 +442,10 @@ export class PrefillController implements PrefillApi {
 			if (!handle.accepting) return;
 			if (model.provider !== handle.model.provider || model.id !== handle.model.id) throw new Error("model_changed");
 			if (!isObject(payload) || !Array.isArray(payload.messages)) throw new Error("payload_not_chat");
+			// Warms are plain text: an image or audio part tokenizes differently in the real
+			// request, so the warm would only match up to it and overwrite the slot's cached
+			// conversation after it (a 52k-token chat with screenshots re-prefilled 28k tokens).
+			if (payload.messages.some(hasNonTextContent)) throw new Error("multimodal_history");
 			const lastMessage: unknown = payload.messages.at(-1);
 			if (!isObject(lastMessage) || lastMessage.role !== "tool" || lastMessage.content !== MARK) {
 				throw new Error("marker_not_last_tool_message");
@@ -589,9 +625,67 @@ export class PrefillController implements PrefillApi {
 		return undefined;
 	}
 
+	/**
+	 * Passive prefill from a tool's progress update. The update text must extend
+	 * the previous one; anything else (status lines, rewritten or truncated output)
+	 * stops passive prefill for that call. Warms once `passiveThresholdChars` new
+	 * characters have accumulated, through the same handle machinery as `begin`.
+	 */
+	private passiveUpdate(toolCallId: string, text: string | undefined): void {
+		const settings = this.options.getSettings();
+		if (!settings.enabled || settings.passive === false) return;
+		let state = this.passive.get(toolCallId);
+		if (!state) {
+			state = { seen: "", committed: 0 };
+			this.passive.set(toolCallId, state);
+		}
+		if (state.off) return;
+		if (text === undefined || !text.startsWith(state.seen)) {
+			state.off = true;
+			state.handle?.cancel("passive_not_append_only");
+			return;
+		}
+		state.seen = text;
+		if (!state.handle) {
+			// An extension driving this call through begin() owns it.
+			if (this.active?.toolCallId === toolCallId) {
+				state.off = true;
+				return;
+			}
+			// Begin on the first update, even an empty one: rendering the request
+			// and leasing the slot (~0.4 s) then happen before the first text that
+			// is worth warming arrives, so that text is sent immediately.
+			state.handle = this.begin(toolCallId);
+			if (!state.handle) {
+				state.off = true;
+				return;
+			}
+		}
+		if (text.length - state.committed < (settings.passiveThresholdChars ?? 1024)) return;
+		if (state.handle.append(text.slice(state.committed))) state.committed = text.length;
+	}
+
+	/** Tool finished: hand the rest of the final result to the warm, or drop it if the result diverged. */
+	private passiveEnd(toolCallId: string, text: string | undefined): void {
+		const state = this.passive.get(toolCallId);
+		this.passive.delete(toolCallId);
+		if (!state?.handle) return;
+		if (text === undefined || !text.startsWith(state.seen)) {
+			state.handle.cancel("passive_result_diverged");
+			return;
+		}
+		if (text.length > state.committed) state.handle.append(text.slice(state.committed));
+		state.handle.end();
+	}
+
 	/** Agent lifecycle: release the pinned lease after its response, drop everything at run end. */
 	onAgentEvent(event: AgentEvent): void {
+		if (event.type === "tool_execution_update") {
+			this.passiveUpdate(event.toolCallId, plainText(event.partialResult));
+			return;
+		}
 		if (event.type === "tool_execution_end") {
+			this.passiveEnd(event.toolCallId, event.isError ? undefined : plainText(event.result));
 			// Same shape as the agent loop's tool result message (agent-loop createToolResultMessage).
 			const result = event.result ?? {};
 			this.results.set(event.toolCallId, {
@@ -615,6 +709,7 @@ export class PrefillController implements PrefillApi {
 		} else if (event.type === "agent_end") {
 			this.cancelAll("agent_end");
 			this.results.clear();
+			this.passive.clear();
 		}
 	}
 

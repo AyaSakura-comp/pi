@@ -1131,6 +1131,7 @@ Contract and safety:
 - The final text result must start with everything passed to `append`, in order. If it does not, or anything else in the next request differs from the preview (history, tools, template options, model, session), the request is sent unchanged.
 - Slots are leased exclusively across sessions and processes (`<agentDir>/prefill-leases`). If the request payload already names a slot via `id_slot` (for example set by a KV cache extension), that slot is used; otherwise one of `prefill.slots` is leased.
 - Abort, agent end, timeout, and session disposal cancel the prefill and release the slot. `cancel(reason)` does so explicitly.
+- **Passive prefill (no code):** with `prefill.passive` (default on), Pi warms from a tool's own progress updates. Send cumulative, append-only text through `onUpdate` (each update must start with the previous one, as the final result must start with the last update); Pi warms whenever `prefill.passiveThresholdChars` new characters have accumulated and appends the rest of the final result when the tool returns. An update that does not extend the previous one (status lines, rewritten or truncated output) or carries non-text parts stops passive prefill for that call. A tool that calls `begin()` itself takes precedence.
 - Correctness never depends on the warm: llama.cpp reuses cached tokens only when they match the final prompt exactly.
 
 ## ExtensionCommandContext

@@ -278,6 +278,122 @@ describe("PrefillController", () => {
 		expect(pinned.id_slot).toBe(1);
 	});
 
+	test("a history with images is never warmed: the slot's cached conversation stays intact", async () => {
+		const h = harness(
+			{},
+			{
+				preview: async () => ({
+					model,
+					payload: {
+						model: "qwen",
+						messages: [
+							{
+								role: "user",
+								content: [
+									{ type: "text", text: "look" },
+									{ type: "image_url", image_url: { url: "data:x" } },
+								],
+							},
+							{ role: "assistant", content: null, tool_calls: [{ id: "call-1" }] },
+							{ role: "tool", tool_call_id: "call-1", content: "\u0000PI_PREFILL_MARK\u0000" },
+						],
+					},
+				}),
+			},
+		);
+		const handle = h.controller.begin("call-1")!;
+		handle.append("A");
+		await flush();
+		expect(h.completions).toHaveLength(0);
+		expect(handle.stats()).toMatchObject({ state: "failed", reason: "multimodal_history" });
+		expect(readdirSync(leaseDir)).toHaveLength(0);
+	});
+
+	const update = (text: string, toolCallId = "call-1") =>
+		({
+			type: "tool_execution_update",
+			toolCallId,
+			toolName: "research",
+			args: {},
+			partialResult: { content: [{ type: "text", text }] },
+		}) as AgentEvent;
+	const finish = (text: string, toolCallId = "call-1") =>
+		({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "research",
+			result: { content: [{ type: "text", text }] },
+			isError: false,
+		}) as AgentEvent;
+
+	test("passive: cumulative tool updates warm once past the threshold, no extension call", async () => {
+		const h = harness({ settings: { enabled: true, slots: [1], passiveThresholdChars: 5 } });
+		h.controller.onAgentEvent(update("abc"));
+		await flush();
+		expect(h.completions).toHaveLength(0); // below threshold
+		h.controller.onAgentEvent(update("abcdefgh"));
+		await flush();
+		expect(h.completions.map((c) => c.prompt)).toEqual(["<head>abcdefgh"]);
+		h.controller.onAgentEvent(update("abcdefghij"));
+		h.gates[0].resolve();
+		await flush();
+		expect(h.completions).toHaveLength(1); // +2 chars stays under the threshold
+		h.controller.onAgentEvent(finish("abcdefghij and the rest"));
+		await flush();
+		expect(h.completions.map((c) => c.prompt)).toEqual(["<head>abcdefgh", "<head>abcdefghij and the rest"]);
+		h.gates[1].resolve();
+		await flush();
+		const pinned = (await h.controller.pin(finalPayload("abcdefghij and the rest"), model)) as Record<
+			string,
+			unknown
+		>;
+		expect(pinned.id_slot).toBe(1);
+	});
+
+	test("passive: an update that does not extend the previous one stops passive prefill", async () => {
+		const h = harness({ settings: { enabled: true, slots: [1], passiveThresholdChars: 3 } });
+		h.controller.onAgentEvent(update("Fetching 1/3"));
+		await flush();
+		expect(h.completions).toHaveLength(1);
+		h.controller.onAgentEvent(update("Fetching 2/3 rewritten"));
+		h.gates[0].resolve();
+		await flush();
+		h.controller.onAgentEvent(update("Fetching 2/3 rewritten and more text"));
+		await flush();
+		expect(h.completions).toHaveLength(1);
+		expect(readdirSync(leaseDir)).toHaveLength(0);
+		expect(await h.controller.pin(finalPayload("anything"), model)).not.toHaveProperty("id_slot");
+	});
+
+	test("passive: off when disabled, with non-text parts, or when an extension drives begin()", async () => {
+		const off = harness({ settings: { enabled: true, slots: [1], passive: false, passiveThresholdChars: 1 } });
+		off.controller.onAgentEvent(update("abcdef"));
+		await flush();
+		expect(off.completions).toHaveLength(0);
+
+		const image = harness({ settings: { enabled: true, slots: [1], passiveThresholdChars: 1 } });
+		image.controller.onAgentEvent({
+			type: "tool_execution_update",
+			toolCallId: "call-1",
+			toolName: "screenshot",
+			args: {},
+			partialResult: { content: [{ type: "image", data: "x", mimeType: "image/png" }] },
+		} as AgentEvent);
+		image.controller.onAgentEvent(update("abcdef"));
+		await flush();
+		expect(image.completions).toHaveLength(0);
+
+		const explicit = harness({ settings: { enabled: true, slots: [1], passiveThresholdChars: 1 } });
+		const handle = explicit.controller.begin("call-1")!;
+		handle.append("A");
+		await flush();
+		explicit.controller.onAgentEvent(update("status text"));
+		explicit.gates[0].resolve();
+		await flush();
+		expect(explicit.completions.map((c) => c.prompt)).toEqual(["<head>A"]);
+		expect(handle.stats().state).toBe("ready");
+	});
+
 	test("a non-tool message after the tool result is never pinned", async () => {
 		const h = harness();
 		const handle = h.controller.begin("call-1")!;

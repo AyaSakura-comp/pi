@@ -107,6 +107,8 @@ Speculative llama.cpp prefill while a tool runs, used by extensions through [`ct
 | `prefill.providers` | string[] | all | Providers allowed to prefill (must use the `openai-completions` API against llama.cpp) |
 | `prefill.slots` | number[] | `[]` | llama.cpp slots that may be leased when the request does not already set `id_slot` |
 | `prefill.ttlMs` | number | `900000` | Maximum lifetime of one prefill and its slot lease |
+| `prefill.passive` | boolean | `true` | Also prefill from any tool's progress updates (`onUpdate`) while each update extends the previous one; no extension code needed |
+| `prefill.passiveThresholdChars` | number | `1024` | Passive prefill warms once this many new characters have accumulated |
 
 ```json
 {
