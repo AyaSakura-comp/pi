@@ -418,7 +418,13 @@ describe("AgentSession model and extension characterization", () => {
 		]);
 
 		await transformedHarness.session.prompt("hello");
+		const pingEvents: string[] = [];
+		const unsubscribe = transformedHarness.session.subscribe((event) => pingEvents.push(event.type));
 		await transformedHarness.session.prompt("ping");
+		unsubscribe();
+		// RPC clients need an explicit completion signal for prompts that start no agent run.
+		expect(pingEvents).toContain("input_handled");
+		expect(pingEvents).not.toContain("agent_start");
 
 		expect(providerUserText).toBe("transformed:hello");
 		expect(transformedHarness.session.messages.filter((message) => message.role === "user")).toHaveLength(1);

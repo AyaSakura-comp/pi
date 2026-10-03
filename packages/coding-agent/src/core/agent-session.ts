@@ -150,6 +150,8 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 	  }
 	| { type: "agent_settled" }
+	/** A prompt was consumed by an extension (input handler or command) and no agent run will start. */
+	| { type: "input_handled"; via: "command" | "input" }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -1176,6 +1178,7 @@ export class AgentSession {
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
+					this._emit({ type: "input_handled", via: "command" });
 					return;
 				}
 			}
@@ -1198,6 +1201,7 @@ export class AgentSession {
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
+					this._emit({ type: "input_handled", via: "input" });
 					return;
 				}
 				if (inputResult.action === "transform") {
