@@ -573,6 +573,21 @@ export interface SessionStartEvent {
 	reason: "startup" | "reload" | "new" | "resume" | "fork";
 	/** Previously active session file. Present for "new", "resume", and "fork". */
 	previousSessionFile?: string;
+	/** Fingerprint of the loaded extension set (see `extensions_changed`). */
+	extensionsFingerprint?: string;
+}
+
+/**
+ * Fired after session_start when the loaded extension set differs from the one
+ * recorded at the previous pi start: an extension was installed, removed or updated.
+ */
+export interface ExtensionsChangedEvent {
+	type: "extensions_changed";
+	/** Fingerprint recorded at the previous start; absent the first time. */
+	previous?: string;
+	current: string;
+	/** Entry paths of the extensions that were added, removed or changed. */
+	changed: string[];
 }
 
 /** Fired when the current session metadata changes. */
@@ -676,6 +691,7 @@ export interface SessionTreeEvent {
 
 export type SessionEvent =
 	| SessionStartEvent
+	| ExtensionsChangedEvent
 	| SessionInfoChangedEvent
 	| SessionBeforeSwitchEvent
 	| SessionBeforeForkEvent
@@ -1263,6 +1279,7 @@ export interface ExtensionAPI {
 	on(event: "project_trust", handler: ProjectTrustHandler): void;
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
+	on(event: "extensions_changed", handler: ExtensionHandler<ExtensionsChangedEvent>): void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
 	on(
 		event: "session_before_switch",

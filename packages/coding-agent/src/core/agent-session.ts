@@ -68,6 +68,7 @@ import {
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
+import { computeExtensionsFingerprint, type ExtensionsFingerprint } from "./extensions/fingerprint.ts";
 import {
 	type ContextUsage,
 	type ExtensionCommandContextActions,
@@ -366,6 +367,8 @@ export class AgentSession {
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	private _extensionsFingerprint?: ExtensionsFingerprint;
+	private _extensionsBound = false;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -1171,6 +1174,13 @@ export class AgentSession {
 		let messages: AgentMessage[] | undefined;
 
 		try {
+			// Reload only at an idle user-prompt boundary, never during a tool loop.
+			// Compute from source contents before loading, then publish the loaded fingerprint.
+			if (this._extensionsFingerprint && this.isIdle && !this.isCompacting && !this.isBashRunning) {
+				const current = computeExtensionsFingerprint(this._resourceLoader.getExtensions().extensions);
+				if (current.fingerprint !== this._extensionsFingerprint.fingerprint) await this.reload();
+			}
+
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
@@ -2455,6 +2465,7 @@ export class AgentSession {
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		this._extensionsBound = true;
 		if (bindings.uiContext !== undefined) {
 			this._extensionUIContext = bindings.uiContext;
 		}
@@ -2475,8 +2486,32 @@ export class AgentSession {
 		}
 
 		this._applyExtensionBindings(this._extensionRunner);
-		await this._extensionRunner.emit(this._sessionStartEvent);
+		await this._emitSessionStart(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+	}
+
+	private async _emitSessionStart(event: SessionStartEvent): Promise<void> {
+		try {
+			const current = computeExtensionsFingerprint(this._resourceLoader.getExtensions().extensions);
+			const previous = this._extensionsFingerprint;
+			this._extensionsFingerprint = current;
+			await this._extensionRunner.emit({ ...event, extensionsFingerprint: current.fingerprint });
+			if (previous?.fingerprint !== current.fingerprint) {
+				const before = new Map(previous?.entries.map((entry) => [entry.path, entry.hash]));
+				const after = new Map(current.entries.map((entry) => [entry.path, entry.hash]));
+				await this._extensionRunner.emit({
+					type: "extensions_changed",
+					previous: previous?.fingerprint,
+					current: current.fingerprint,
+					changed: [...new Set([...before.keys(), ...after.keys()])]
+						.filter((entry) => before.get(entry) !== after.get(entry))
+						.sort(),
+				});
+			}
+		} catch (error) {
+			console.warn(`[pi] Extension fingerprint unavailable: ${String(error)}`);
+			await this._extensionRunner.emit(event);
+		}
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -2844,13 +2879,14 @@ export class AgentSession {
 		});
 
 		const hasBindings =
+			this._extensionsBound ||
 			this._extensionUIContext ||
 			this._extensionCommandContextActions ||
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
 		if (hasBindings) {
 			await options?.beforeSessionStart?.();
-			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+			await this._emitSessionStart({ type: "session_start", reason: "reload" });
 			await this.extendResourcesFromExtensions("reload");
 		}
 	}

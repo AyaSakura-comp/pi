@@ -392,13 +392,28 @@ See [Session Format](session-format.md) for session storage internals and the Se
 
 #### session_start
 
-Fired when a session is started, loaded, or reloaded.
+Fired when a session is started, loaded, or reloaded. `extensionsFingerprint` is a content hash of the loaded filesystem extension set, available even when it has not changed; inline factories are not filesystem-watchable.
+
+At an idle user-prompt boundary Pi checks loaded extension source/config contents. If changed, it runs the normal reload lifecycle before the prompt. It never reloads a streaming/tool loop. Tests, logs, caches, virtual environments and dependency directories are excluded; package manifests/lockfiles are included. Newly installed/discovered extensions are picked up by startup or resource reload.
 
 ```typescript
 pi.on("session_start", async (event, ctx) => {
+  // event.extensionsFingerprint - loaded filesystem extensions content hash
   // event.reason - "startup" | "reload" | "new" | "resume" | "fork"
   // event.previousSessionFile - present for "new", "resume", and "fork"
   ctx.ui.notify(`Session: ${ctx.sessionManager.getSessionFile() ?? "ephemeral"}`, "info");
+});
+```
+
+#### extensions_changed
+
+Emitted immediately after `session_start` when the loaded extension fingerprint differs from the previous loaded runtime (including the initial runtime, where `previous` is undefined). It contains `previous`, `current`, and `changed` entry paths. On a new process, extensions should compare `current` with their own persisted cache fingerprint rather than treating an initial event as proof of a version update. Build derived prompt caches only once the complete serialized system prompt and tools are available in `before_provider_request`.
+
+```typescript
+pi.on("extensions_changed", (event) => {
+  // event.previous - prior loaded-runtime fingerprint, or undefined
+  // event.current - current loaded-runtime fingerprint
+  // event.changed - added, removed or changed entry paths
 });
 ```
 

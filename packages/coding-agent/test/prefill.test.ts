@@ -52,7 +52,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 40));
 
 interface Harness {
 	controller: PrefillController;
-	completions: Array<{ prompt: string; id_slot: number }>;
+	completions: Array<{ prompt: string; id_slot: number; slot_snapshot?: string }>;
 	/** Gate for each /completion call, released in order by the test. */
 	gates: Deferred[];
 	aborted: number;
@@ -60,6 +60,7 @@ interface Harness {
 	settings: PrefillSettings;
 	sessionId: string;
 	previewSlot?: number;
+	previewSnapshot?: string;
 }
 
 let leaseDir: string;
@@ -88,7 +89,11 @@ function harness(overrides: Partial<Harness> = {}, options: Partial<PrefillContr
 		}
 		const gate = deferred();
 		h.gates.push(gate);
-		h.completions.push({ prompt: body.prompt, id_slot: body.id_slot });
+		h.completions.push({
+			prompt: body.prompt,
+			id_slot: body.id_slot,
+			...(typeof body.slot_snapshot === "string" ? { slot_snapshot: body.slot_snapshot } : {}),
+		});
 		await new Promise<void>((resolve, reject) => {
 			init.signal?.addEventListener("abort", () => {
 				h.aborted++;
@@ -117,6 +122,7 @@ function harness(overrides: Partial<Harness> = {}, options: Partial<PrefillContr
 					],
 					tools: [{ name: "research" }],
 					...(h.previewSlot === undefined ? {} : { id_slot: h.previewSlot }),
+					...(h.previewSnapshot === undefined ? {} : { slot_snapshot: h.previewSnapshot }),
 				},
 			};
 		},
@@ -573,6 +579,40 @@ describe("PrefillController", () => {
 		expect(handle.stats()).toMatchObject({ state: "failed", reason: "lease_lost" });
 		// The foreign lease is left alone.
 		expect(readdirSync(leaseDir)).toHaveLength(1);
+	});
+
+	test("preserves session snapshot ownership on every native warm", async () => {
+		const snapshot = "kv2_test_snap_a.bin";
+		const h = harness({ settings: { enabled: true }, previewSlot: 0, previewSnapshot: snapshot });
+		const handle = h.controller.begin("call-1")!;
+		handle.append("A");
+		await flush();
+		handle.append("B");
+		h.gates[0].resolve();
+		await flush();
+		expect(h.completions).toEqual([
+			{ prompt: "<head>A", id_slot: 0, slot_snapshot: snapshot },
+			{ prompt: "<head>AB", id_slot: 0, slot_snapshot: snapshot },
+		]);
+		h.gates[1].resolve();
+		await flush();
+		const pinned = await h.controller.pin(finalPayload("AB rest", { id_slot: 0, slot_snapshot: snapshot }), model);
+		expect(pinned).toMatchObject({ id_slot: 0, slot_snapshot: snapshot, cache_prompt: true });
+	});
+
+	test("changed or removed session snapshot ownership is never pinned", async () => {
+		for (const slot_snapshot of ["kv2_test_snap_b.bin", undefined]) {
+			const h = harness({ settings: { enabled: true }, previewSlot: 0, previewSnapshot: "kv2_test_snap_a.bin" });
+			const handle = h.controller.begin("call-1")!;
+			handle.append("A");
+			await flush();
+			h.gates[0].resolve();
+			await flush();
+			const payload = finalPayload("A", { id_slot: 0, slot_snapshot });
+			expect(await h.controller.pin(payload, model)).toBe(payload);
+			expect(handle.stats()).toMatchObject({ state: "cancelled", reason: "session_snapshot_changed" });
+			await flush();
+		}
 	});
 
 	test("uses the slot chosen by the payload pipeline and refuses to pin if it moved", async () => {

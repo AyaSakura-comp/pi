@@ -532,6 +532,11 @@ export class PrefillController implements PrefillApi {
 				prompt: handle.head + text,
 				n_predict: 0,
 				id_slot: handle.slot,
+				// Keep the session's ownership tag across the native warm. Dropping
+				// it makes eviction-before-save treat this same-session tool as foreign.
+				...(handle.slotSource === "session" && typeof handle.preview?.slot_snapshot === "string"
+					? { slot_snapshot: handle.preview.slot_snapshot }
+					: {}),
 				cache_prompt: true,
 			});
 			const timings = isObject(result) && isObject(result.timings) ? result.timings : undefined;
@@ -622,6 +627,9 @@ export class PrefillController implements PrefillApi {
 		if (payload.model !== preview.model) return "payload_model";
 		for (const key of TEMPLATE_KEYS) if (!sameJson(payload[key], preview[key])) return `option_${key}`;
 		if (handle.slotSource === "session" && payload.id_slot !== handle.slot) return "session_slot_moved";
+		if (handle.slotSource === "session" && !sameJson(payload.slot_snapshot, preview.slot_snapshot)) {
+			return "session_snapshot_changed";
+		}
 		return undefined;
 	}
 
