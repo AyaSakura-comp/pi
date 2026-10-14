@@ -201,6 +201,34 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 		expect(resolvedFromSettings).toBe(realpathSync(relativePkgDir));
 	});
 
+	it("runs the after-package-change hook after install and remove", async () => {
+		const hooksDir = join(agentDir, "hooks");
+		mkdirSync(hooksDir, { recursive: true });
+		const record = join(tempDir, "hook-record.txt");
+		const hook = join(hooksDir, "after-package-change");
+		writeFileSync(hook, `#!/bin/sh\necho "$1 $PI_PACKAGE_COMMAND" >> "${record}"\n`);
+		chmodSync(hook, 0o755);
+
+		await main(["install", packageDir]);
+		await main(["remove", packageDir]);
+
+		await vi.waitFor(
+			() =>
+				expect(readFileSync(record, "utf-8").trim().split("\n").sort()).toEqual([
+					"install install",
+					"remove remove",
+				]),
+			{
+				timeout: 5000,
+			},
+		);
+	});
+
+	it("ignores a missing after-package-change hook", async () => {
+		await expect(main(["install", packageDir])).resolves.toBeUndefined();
+		expect(process.exitCode ?? 0).toBe(0);
+	});
+
 	it("should remove local packages using a path with a trailing slash", async () => {
 		await main(["install", `${packageDir}/`]);
 

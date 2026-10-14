@@ -252,6 +252,32 @@ interface PackageCommandOptions {
 	conflictingOptions?: string;
 }
 
+/**
+ * Run `<agentDir>/hooks/after-package-change <command> <source>` detached after a successful
+ * install/remove/update, so local tooling (e.g. a KV cache prewarm) can react without delaying
+ * the command. Missing or non-executable hooks are ignored.
+ */
+function runAfterPackageChangeHook(agentDir: string, command: PackageCommand, source?: string): void {
+	const hook = join(agentDir, "hooks", "after-package-change");
+	if (!existsSync(hook)) return;
+	try {
+		const child = spawnProcess(hook, [command, source ?? ""], {
+			cwd: agentDir,
+			detached: true,
+			stdio: "ignore",
+			env: { ...process.env, PI_PACKAGE_COMMAND: command, PI_PACKAGE_SOURCE: source ?? "" },
+		});
+		child.on("error", (error) =>
+			console.error(chalk.yellow(`Warning: after-package-change hook failed: ${error.message}`)),
+		);
+		child.unref();
+		console.log(chalk.dim(`Started ${hook}`));
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.yellow(`Warning: after-package-change hook failed: ${message}`));
+	}
+}
+
 function reportSettingsErrors(settingsManager: SettingsManager, context: string): void {
 	const errors = settingsManager.drainErrors();
 	for (const { scope, error } of errors) {
@@ -954,6 +980,7 @@ export async function handlePackageCommand(
 			case "install":
 				await packageManager.installAndPersist(source!, { local: options.local });
 				console.log(chalk.green(`Installed ${source}`));
+				runAfterPackageChangeHook(agentDir, "install", source);
 				return true;
 
 			case "remove": {
@@ -964,6 +991,7 @@ export async function handlePackageCommand(
 					return true;
 				}
 				console.log(chalk.green(`Removed ${source}`));
+				runAfterPackageChangeHook(agentDir, "remove", source);
 				return true;
 			}
 
@@ -1018,6 +1046,7 @@ export async function handlePackageCommand(
 					} else {
 						console.log(chalk.green("Updated packages"));
 					}
+					runAfterPackageChangeHook(agentDir, "update", updateSource);
 				}
 				if (updateTargetIncludesSelf(target)) {
 					const managedInstallRoot = getActiveManagedInstallRoot();
